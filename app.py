@@ -7,8 +7,8 @@ from PIL import Image
 # Load models once
 @st.cache_resource
 def load_models():
-    model1 = load_model("models/best_resnet50_transfer_learning_model.h5")
-    model2 = load_model("models/best_custom_cnn_attention_model.h5")
+    model1 = load_model("https://github.com/sureshhansaka/SkinDiseaseClassification/releases/download/v1.0.0/best_resnet50_transfer_learning_model.h5")
+    model2 = load_model("https://github.com/sureshhansaka/SkinDiseaseClassification/releases/download/v1.0.0/best_custom_cnn_attention_model.h5")
     return model1, model2
 
 model1, model2 = load_models()
