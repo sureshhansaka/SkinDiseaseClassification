@@ -11,9 +11,9 @@ import gdown
 # -----------------------
 # CONFIGURATION
 # -----------------------
-# Google Drive file IDs
-CUSTOM_CNN_ID = "1lw3jey8sgW2ALcEFeJiFHt2V6-mxJy-B"
-RESNET50_ID = "1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw"
+# Google Drive file IDs (UPDATE THESE WITH YOUR NEW FILE IDs)
+CUSTOM_CNN_ID = "1lw3jey8sgW2ALcEFeJiFHt2V6-mxJy-B"  # Replace with new file ID
+RESNET50_ID = "1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw"      # Replace with new file ID
 
 # Model URLs
 MODELS = {
@@ -64,69 +64,89 @@ def download_model(url: str, output_path: str) -> str:
 
 @st.cache_resource(show_spinner=False)
 def load_model(path: str, model_name: str):
-    """Load the trained model with custom layer support"""
+    """Load the trained model with custom layer support and version compatibility"""
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Model file not found: {path}")
     
-    try:
-        # Try loading with custom attention layer for Custom CNN
-        if "attention" in model_name.lower():
-            from tensorflow.keras import layers
-            
-            class AttentionLayer(layers.Layer):
-                def __init__(self, **kwargs):
-                    super(AttentionLayer, self).__init__(**kwargs)
-                
-                def build(self, input_shape):
-                    self.W = self.add_weight(
-                        name='attention_weight',
-                        shape=(input_shape[-1], 1),
-                        initializer='random_normal',
-                        trainable=True
-                    )
-                    self.b = self.add_weight(
-                        name='attention_bias',
-                        shape=(input_shape[1], 1),
-                        initializer='zeros',
-                        trainable=True
-                    )
-                    super(AttentionLayer, self).build(input_shape)
-                
-                def call(self, x):
-                    e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
-                    a = tf.keras.backend.softmax(e, axis=1)
-                    output = x * a
-                    return tf.keras.backend.sum(output, axis=1)
-                
-                def get_config(self):
-                    return super(AttentionLayer, self).get_config()
-            
-            custom_objects = {'AttentionLayer': AttentionLayer}
-            model = keras.models.load_model(path, custom_objects=custom_objects, compile=False)
-        else:
-            model = keras.models.load_model(path, compile=False)
-        
-        # Compile the model
-        model.compile(
-            optimizer='adam',
-            loss='categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        return model
+    # Custom attention layer definition
+    from tensorflow.keras import layers
     
-    except Exception as e1:
-        # Fallback: try loading without custom objects
+    class AttentionLayer(layers.Layer):
+        def __init__(self, **kwargs):
+            super(AttentionLayer, self).__init__(**kwargs)
+        
+        def build(self, input_shape):
+            self.W = self.add_weight(
+                name='attention_weight',
+                shape=(input_shape[-1], 1),
+                initializer='random_normal',
+                trainable=True
+            )
+            self.b = self.add_weight(
+                name='attention_bias',
+                shape=(input_shape[1], 1),
+                initializer='zeros',
+                trainable=True
+            )
+            super(AttentionLayer, self).build(input_shape)
+        
+        def call(self, x):
+            e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
+            a = tf.keras.backend.softmax(e, axis=1)
+            output = x * a
+            return tf.keras.backend.sum(output, axis=1)
+        
+        def get_config(self):
+            return super(AttentionLayer, self).get_config()
+    
+    custom_objects = {'AttentionLayer': AttentionLayer}
+    
+    # Try multiple loading strategies
+    loading_strategies = [
+        # Strategy 1: Load with safe_mode=False (for TF version compatibility)
+        lambda: keras.models.load_model(path, custom_objects=custom_objects, compile=False, safe_mode=False),
+        
+        # Strategy 2: Load without custom objects
+        lambda: keras.models.load_model(path, compile=False, safe_mode=False),
+        
+        # Strategy 3: Use h5py directly with custom deserialization
+        lambda: load_model_h5_manual(path, custom_objects),
+    ]
+    
+    last_error = None
+    for i, strategy in enumerate(loading_strategies, 1):
         try:
-            model = keras.models.load_model(path, compile=False)
+            model = strategy()
+            # Compile the model
             model.compile(
                 optimizer='adam',
                 loss='categorical_crossentropy',
                 metrics=['accuracy']
             )
+            st.sidebar.caption(f"✓ Loaded using strategy {i}")
             return model
-        except Exception as e2:
-            st.error(f"Failed to load model: {str(e2)[:300]}")
-            raise
+        except Exception as e:
+            last_error = e
+            continue
+    
+    # If all strategies fail, show error
+    st.error(f"All loading strategies failed. Last error: {str(last_error)[:300]}")
+    raise last_error
+
+def load_model_h5_manual(path: str, custom_objects: dict):
+    """Manual H5 loading with version compatibility fixes"""
+    import h5py
+    from tensorflow.python.keras.saving import hdf5_format
+    
+    try:
+        # Try using legacy loader
+        with h5py.File(path, 'r') as f:
+            # Load using legacy format
+            model = hdf5_format.load_model_from_hdf5(path, custom_objects=custom_objects, compile=False)
+            return model
+    except Exception:
+        # Final fallback: reconstruct from weights
+        raise RuntimeError("Could not load model with any method")
 
 def resize_and_crop(im: Image.Image, target_size: int) -> Image.Image:
     """Resize image maintaining aspect ratio, then center crop"""
