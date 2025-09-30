@@ -49,8 +49,37 @@ def load_model_safe(model_path):
         return None
     
     try:
-        # Load without compiling first
-        model = tf.keras.models.load_model(model_path, compile=False)
+        # Try loading with custom objects for attention layer
+        from tensorflow.keras import layers
+        
+        # Define custom attention layer if it exists
+        class AttentionLayer(layers.Layer):
+            def __init__(self, **kwargs):
+                super(AttentionLayer, self).__init__(**kwargs)
+            
+            def build(self, input_shape):
+                self.W = self.add_weight(name='attention_weight',
+                                        shape=(input_shape[-1], 1),
+                                        initializer='random_normal',
+                                        trainable=True)
+                self.b = self.add_weight(name='attention_bias',
+                                        shape=(input_shape[1], 1),
+                                        initializer='zeros',
+                                        trainable=True)
+                super(AttentionLayer, self).build(input_shape)
+            
+            def call(self, x):
+                e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
+                a = tf.keras.backend.softmax(e, axis=1)
+                output = x * a
+                return tf.keras.backend.sum(output, axis=1)
+            
+            def get_config(self):
+                return super(AttentionLayer, self).get_config()
+        
+        # Load with custom objects
+        custom_objects = {'AttentionLayer': AttentionLayer}
+        model = tf.keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)
         model.compile(
             optimizer='adam',
             loss='categorical_crossentropy',
@@ -58,15 +87,9 @@ def load_model_safe(model_path):
         )
         return model
     except Exception as e1:
-        st.warning(f"Standard loading failed, trying alternative method...")
-        
+        # Try without custom objects
         try:
-            # Try with safe_mode=False for older models
-            model = tf.keras.models.load_model(
-                model_path, 
-                compile=False,
-                safe_mode=False
-            )
+            model = tf.keras.models.load_model(model_path, compile=False)
             model.compile(
                 optimizer='adam',
                 loss='categorical_crossentropy',
@@ -74,8 +97,24 @@ def load_model_safe(model_path):
             )
             return model
         except Exception as e2:
-            st.error(f"Failed to load model: {str(e2)[:200]}")
-            return None
+            # Last resort: try with safe_mode=False
+            try:
+                model = tf.keras.models.load_model(
+                    model_path, 
+                    compile=False,
+                    safe_mode=False
+                )
+                model.compile(
+                    optimizer='adam',
+                    loss='categorical_crossentropy',
+                    metrics=['accuracy']
+                )
+                return model
+            except Exception as e3:
+                st.error(f"Failed to load model. Error: {str(e3)[:300]}")
+                with st.expander("View Full Error"):
+                    st.code(str(e3))
+                return None
 
 def preprocess_image(image, target_size=(224, 224)):
     """Preprocess image for model prediction"""
