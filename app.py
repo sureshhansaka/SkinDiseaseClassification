@@ -50,23 +50,26 @@ def load_model_safe(model_path):
         return None
     
     try:
-        # Try loading without compiling (avoids optimizer issues)
+        # First attempt: Load without compiling
         model = tf.keras.models.load_model(model_path, compile=False)
-        
-        # Recompile with a basic optimizer
         model.compile(
             optimizer='adam',
             loss='categorical_crossentropy',
             metrics=['accuracy']
         )
         return model
-    except Exception as e:
-        st.error(f"Model loading error: {str(e)}")
+    except Exception as e1:
+        st.warning(f"First loading attempt failed: {str(e1)[:100]}")
         
-        # Try alternative loading method
+        # Second attempt: Use custom object scope with unsafe deserialization
         try:
-            with tf.keras.utils.custom_object_scope({}):
-                model = tf.keras.models.load_model(model_path, compile=False)
+            import h5py
+            with h5py.File(model_path, 'r') as f:
+                model = tf.keras.models.load_model(
+                    model_path, 
+                    compile=False,
+                    safe_mode=False  # Disable safe mode for compatibility
+                )
                 model.compile(
                     optimizer='adam',
                     loss='categorical_crossentropy',
@@ -74,8 +77,22 @@ def load_model_safe(model_path):
                 )
                 return model
         except Exception as e2:
-            st.error(f"Alternative loading failed: {str(e2)}")
-            return None
+            st.warning(f"Second loading attempt failed: {str(e2)[:100]}")
+            
+            # Third attempt: Load with TF2 compatibility
+            try:
+                from tensorflow.python.keras.saving import hdf5_format
+                model = hdf5_format.load_model_from_hdf5(model_path, compile=False)
+                model.compile(
+                    optimizer='adam',
+                    loss='categorical_crossentropy',
+                    metrics=['accuracy']
+                )
+                return model
+            except Exception as e3:
+                st.error(f"All loading attempts failed. Last error: {str(e3)[:150]}")
+                st.info("💡 The model files may need to be re-saved. Please check the instructions below.")
+                return None
 
 def preprocess_image(image, target_size=(224, 224)):
     """Preprocess image for model prediction"""
@@ -193,12 +210,44 @@ with col2:
     st.subheader("🔍 Prediction Results")
     
     if model is None:
-        st.error("⚠️ Model failed to load. Please try the following:")
-        st.markdown("""
-        1. Refresh the page
-        2. Try the other model
-        3. Check if models are accessible on GitHub
-        """)
+        st.error("⚠️ Model failed to load due to compatibility issues.")
+        
+        with st.expander("📋 How to Fix This Issue"):
+            st.markdown("""
+            ### Option 1: Re-save Models (Recommended)
+            
+            Run this in your Jupyter notebook where you trained the models:
+            
+            ```python
+            import tensorflow as tf
+            
+            # For Custom CNN
+            model = tf.keras.models.load_model('best_custom_cnn_attention_model.h5')
+            tf.keras.models.save_model(
+                model, 
+                'best_custom_cnn_attention_model.h5',
+                save_format='h5',
+                include_optimizer=False
+            )
+            
+            # For ResNet50
+            model = tf.keras.models.load_model('best_resnet50_transfer_learning_model.h5')
+            tf.keras.models.save_model(
+                model,
+                'best_resnet50_transfer_learning_model.h5', 
+                save_format='h5',
+                include_optimizer=False
+            )
+            ```
+            
+            Then re-upload to GitHub releases.
+            
+            ### Option 2: Try Different TensorFlow Version
+            
+            The models might be compatible with a different TensorFlow version.
+            Current version: {}
+            """.format(tf.__version__))
+            
     elif image is None:
         st.info("👆 Please upload an image to get started")
     else:
@@ -246,7 +295,6 @@ st.markdown("""
 # Debug information (hidden by default)
 with st.expander("🔧 Debug Information"):
     st.write(f"TensorFlow Version: {tf.__version__}")
-    st.write(f"Keras Version: {keras.__version__}")
     st.write(f"Model loaded: {model is not None}")
     if model is not None:
         st.write(f"Model input shape: {model.input_shape}")
