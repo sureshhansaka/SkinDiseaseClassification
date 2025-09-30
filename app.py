@@ -12,8 +12,8 @@ import gdown
 # CONFIGURATION
 # -----------------------
 # Google Drive file IDs (UPDATE THESE WITH YOUR NEW FILE IDs)
-CUSTOM_CNN_ID = "1lw3jey8sgW2ALcEFeJiFHt2V6-mxJy-B"  # Replace with new file ID
-RESNET50_ID = "1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw"      # Replace with new file ID
+CUSTOM_CNN_ID = "1irrpB4NAH41Xk1jd9F9bxcvFAMkZOVz5"  # Replace with new file ID
+RESNET50_ID = "1iGKInycbqXCVQ1FTrOBYHjVHAcBDNob0"      # Replace with new file ID
 
 # Model URLs
 MODELS = {
