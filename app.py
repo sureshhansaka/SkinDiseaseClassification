@@ -89,6 +89,7 @@ def load_model_safe(model_path):
         pass
 
     # Fallback model
+    st.info("⚠️ Using fallback lightweight model (original model not compatible).")
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=(224, 224, 3)),
         tf.keras.layers.Conv2D(32, 3, activation='relu'),
