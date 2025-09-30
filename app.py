@@ -9,7 +9,7 @@ import os
 
 # Model URLs
 CUSTOM_CNN_URL = "https://drive.google.com/file/d/1lw3jey8sgW2ALcEFeJiFHt2V6-mxJy-B/view?usp=sharing"
-RESNET50_URL = "https://drive.google.com/file/d/1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw/view?usp=drive_link"
+RESNET50_URL = "https://drive.google.com/file/d/1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw/view?usp=sharing"
 
 # Class names from your training dataset
 CLASS_NAMES = [
