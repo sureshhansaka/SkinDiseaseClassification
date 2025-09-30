@@ -8,7 +8,7 @@ from io import BytesIO
 import os
 
 # Model URLs
-CUSTOM_CNN_URL = "https://github.com/sureshhansaka/SkinDiseaseClassification/releases/download/v1.0.0/best_custom_cnn_attention_model.h5"
+CUSTOM_CNN_URL = "sha256:ccf94e7b4159406e6385916953f84fcd791b2056e781ec262690897639d1495a"
 RESNET50_URL = "https://github.com/sureshhansaka/SkinDiseaseClassification/releases/download/v1.0.0/best_resnet50_transfer_learning_model.h5"
 
 # Class names from your training dataset
