@@ -40,7 +40,17 @@ def download_model(url, model_name):
 @st.cache_resource
 def load_model(model_path):
     """Load the trained model"""
-    return keras.models.load_model(model_path)
+    try:
+        # Try loading with compile=False to avoid optimizer issues
+        return keras.models.load_model(model_path, compile=False)
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        # Try with custom objects if needed
+        try:
+            return tf.keras.models.load_model(model_path, compile=False)
+        except Exception as e2:
+            st.error(f"Failed to load model: {e2}")
+            return None
 
 def preprocess_image(image, target_size=(224, 224)):
     """Preprocess image for model prediction"""
@@ -84,11 +94,17 @@ model_choice = st.sidebar.radio(
 if model_choice == "Custom CNN with Attention":
     model_path = download_model(CUSTOM_CNN_URL, "custom_cnn_attention")
     model = load_model(model_path)
-    st.sidebar.success("✓ Custom CNN Model Loaded")
+    if model is not None:
+        st.sidebar.success("✓ Custom CNN Model Loaded")
+    else:
+        st.sidebar.error("❌ Failed to load Custom CNN Model")
 else:
     model_path = download_model(RESNET50_URL, "resnet50_transfer")
     model = load_model(model_path)
-    st.sidebar.success("✓ ResNet50 Model Loaded")
+    if model is not None:
+        st.sidebar.success("✓ ResNet50 Model Loaded")
+    else:
+        st.sidebar.error("❌ Failed to load ResNet50 Model")
 
 # Display model info
 st.sidebar.markdown("---")
