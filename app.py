@@ -1,207 +1,140 @@
-import io
-import os
-from typing import List, Tuple
-import numpy as np
 import streamlit as st
-from PIL import Image
 import tensorflow as tf
 from tensorflow import keras
-import gdown
-
-# -----------------------
-# CONFIGURATION
-# -----------------------
-# Google Drive file IDs (UPDATE THESE WITH YOUR NEW FILE IDs)
-CUSTOM_CNN_ID = "1irrpB4NAH41Xk1jd9F9bxcvFAMkZOVz5"  # Replace with new file ID
-RESNET50_ID = "1iGKInycbqXCVQ1FTrOBYHjVHAcBDNob0"      # Replace with new file ID
+import numpy as np
+from PIL import Image
+import requests
+from io import BytesIO
+import os
 
 # Model URLs
-MODELS = {
-    "Custom CNN with Attention": {
-        "url": f"https://drive.google.com/uc?id={CUSTOM_CNN_ID}",
-        "output": "custom_cnn_attention.h5",
-        "description": "Custom CNN architecture with attention mechanisms"
-    },
-    "ResNet50 Transfer Learning": {
-        "url": f"https://drive.google.com/uc?id={RESNET50_ID}",
-        "output": "resnet50_transfer.h5",
-        "description": "ResNet50 pre-trained with transfer learning"
-    }
-}
-
-# Image processing parameters
-IMG_SIZE = 224
-TOPK = 5  # Show top 5 predictions
+CUSTOM_CNN_URL = "https://drive.google.com/file/d/1irrpB4NAH41Xk1jd9F9bxcvFAMkZOVz5/view?usp=sharing"
+RESNET50_URL = "https://drive.google.com/file/d/1iGKInycbqXCVQ1FTrOBYHjVHAcBDNob0/view?usp=sharing"
 
 # Class names from your training dataset
 CLASS_NAMES = [
-    'Actinic keratosis',
-    'Atopic Dermatitis',
-    'Benign keratosis',
-    'Dermatofibroma',
-    'Melanocytic nevus',
-    'Melanoma',
-    'Squamous cell carcinoma',
-    'Tinea Ringworm Candidiasis',
+    'Actinic keratosis', 
+    'Atopic Dermatitis', 
+    'Benign keratosis', 
+    'Dermatofibroma', 
+    'Melanocytic nevus', 
+    'Melanoma', 
+    'Squamous cell carcinoma', 
+    'Tinea Ringworm Candidiasis', 
     'Vascular lesion'
 ]
-NUM_CLASSES = len(CLASS_NAMES)
 
-# -----------------------
-# HELPER FUNCTIONS
-# -----------------------
-def download_model(url: str, output_path: str) -> str:
-    """Download model from Google Drive if not already cached"""
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        return output_path
+@st.cache_resource
+def download_model(url, model_name):
+    """Download model from GitHub releases"""
+    model_path = f"{model_name}.h5"
+    
+    if not os.path.exists(model_path):
+        with st.spinner(f'Downloading {model_name}...'):
+            try:
+                response = requests.get(url, timeout=60)
+                response.raise_for_status()
+                with open(model_path, 'wb') as f:
+                    f.write(response.content)
+                st.success(f"✓ Downloaded {model_name}")
+            except Exception as e:
+                st.error(f"Failed to download model: {e}")
+                return None
+    
+    return model_path
+
+@st.cache_resource
+def load_model_safe(model_path):
+    """Load the trained model with error handling"""
+    if model_path is None:
+        return None
     
     try:
-        gdown.download(url, output_path, quiet=False)
-        return output_path
+        # First attempt: Load without compiling
+        model = tf.keras.models.load_model(model_path, compile=False)
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        return model
+    except Exception as e1:
+        st.warning(f"First loading attempt failed: {str(e1)[:100]}")
+        
+        # Second attempt: Use custom object scope with unsafe deserialization
+        try:
+            import h5py
+            with h5py.File(model_path, 'r') as f:
+                model = tf.keras.models.load_model(
+                    model_path, 
+                    compile=False,
+                    safe_mode=False  # Disable safe mode for compatibility
+                )
+                model.compile(
+                    optimizer='adam',
+                    loss='categorical_crossentropy',
+                    metrics=['accuracy']
+                )
+                return model
+        except Exception as e2:
+            st.warning(f"Second loading attempt failed: {str(e2)[:100]}")
+            
+            # Third attempt: Load with TF2 compatibility
+            try:
+                from tensorflow.python.keras.saving import hdf5_format
+                model = hdf5_format.load_model_from_hdf5(model_path, compile=False)
+                model.compile(
+                    optimizer='adam',
+                    loss='categorical_crossentropy',
+                    metrics=['accuracy']
+                )
+                return model
+            except Exception as e3:
+                st.error(f"All loading attempts failed. Last error: {str(e3)[:150]}")
+                st.info("💡 The model files may need to be re-saved. Please check the instructions below.")
+                return None
+
+def preprocess_image(image, target_size=(224, 224)):
+    """Preprocess image for model prediction"""
+    try:
+        # Resize image
+        image = image.resize(target_size)
+        # Convert to array
+        img_array = np.array(image)
+        
+        # Ensure RGB format
+        if len(img_array.shape) == 2:  # Grayscale
+            img_array = np.stack([img_array] * 3, axis=-1)
+        elif img_array.shape[-1] == 4:  # RGBA
+            img_array = img_array[:, :, :3]
+        
+        # Normalize pixel values
+        img_array = img_array.astype('float32') / 255.0
+        
+        # Add batch dimension
+        img_array = np.expand_dims(img_array, axis=0)
+        return img_array
     except Exception as e:
-        st.error(f"Failed to download model: {e}")
+        st.error(f"Image preprocessing error: {e}")
         return None
 
-@st.cache_resource(show_spinner=False)
-def load_model(path: str, model_name: str):
-    """Load the trained model with custom layer support and version compatibility"""
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"Model file not found: {path}")
-    
-    # Custom attention layer definition
-    from tensorflow.keras import layers
-    
-    class AttentionLayer(layers.Layer):
-        def __init__(self, **kwargs):
-            super(AttentionLayer, self).__init__(**kwargs)
-        
-        def build(self, input_shape):
-            self.W = self.add_weight(
-                name='attention_weight',
-                shape=(input_shape[-1], 1),
-                initializer='random_normal',
-                trainable=True
-            )
-            self.b = self.add_weight(
-                name='attention_bias',
-                shape=(input_shape[1], 1),
-                initializer='zeros',
-                trainable=True
-            )
-            super(AttentionLayer, self).build(input_shape)
-        
-        def call(self, x):
-            e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
-            a = tf.keras.backend.softmax(e, axis=1)
-            output = x * a
-            return tf.keras.backend.sum(output, axis=1)
-        
-        def get_config(self):
-            return super(AttentionLayer, self).get_config()
-    
-    custom_objects = {'AttentionLayer': AttentionLayer}
-    
-    # Try multiple loading strategies
-    loading_strategies = [
-        # Strategy 1: Load with safe_mode=False (for TF version compatibility)
-        lambda: keras.models.load_model(path, custom_objects=custom_objects, compile=False, safe_mode=False),
-        
-        # Strategy 2: Load without custom objects
-        lambda: keras.models.load_model(path, compile=False, safe_mode=False),
-        
-        # Strategy 3: Use h5py directly with custom deserialization
-        lambda: load_model_h5_manual(path, custom_objects),
-    ]
-    
-    last_error = None
-    for i, strategy in enumerate(loading_strategies, 1):
-        try:
-            model = strategy()
-            # Compile the model
-            model.compile(
-                optimizer='adam',
-                loss='categorical_crossentropy',
-                metrics=['accuracy']
-            )
-            st.sidebar.caption(f"✓ Loaded using strategy {i}")
-            return model
-        except Exception as e:
-            last_error = e
-            continue
-    
-    # If all strategies fail, show error
-    st.error(f"All loading strategies failed. Last error: {str(last_error)[:300]}")
-    raise last_error
-
-def load_model_h5_manual(path: str, custom_objects: dict):
-    """Manual H5 loading with version compatibility fixes"""
-    import h5py
-    from tensorflow.python.keras.saving import hdf5_format
-    
+def predict(model, image):
+    """Make prediction using the model"""
     try:
-        # Try using legacy loader
-        with h5py.File(path, 'r') as f:
-            # Load using legacy format
-            model = hdf5_format.load_model_from_hdf5(path, custom_objects=custom_objects, compile=False)
-            return model
-    except Exception:
-        # Final fallback: reconstruct from weights
-        raise RuntimeError("Could not load model with any method")
+        processed_image = preprocess_image(image)
+        if processed_image is None:
+            return None, None, None
+        
+        predictions = model.predict(processed_image, verbose=0)
+        predicted_class_idx = np.argmax(predictions[0])
+        confidence = predictions[0][predicted_class_idx]
+        
+        return predicted_class_idx, confidence, predictions[0]
+    except Exception as e:
+        st.error(f"Prediction error: {e}")
+        return None, None, None
 
-def resize_and_crop(im: Image.Image, target_size: int) -> Image.Image:
-    """Resize image maintaining aspect ratio, then center crop"""
-    w, h = im.size
-    # Resize shorter side to slightly larger than target
-    scale = max(target_size / w, target_size / h)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-    im = im.resize((new_w, new_h), Image.BILINEAR)
-    
-    # Center crop
-    left = (new_w - target_size) // 2
-    top = (new_h - target_size) // 2
-    return im.crop((left, top, left + target_size, top + target_size))
-
-def preprocess_image(pil_img: Image.Image, img_size: int) -> np.ndarray:
-    """
-    Preprocess image for model prediction
-    Returns NHWC float32 array ready for model.predict
-    """
-    # Convert to RGB
-    im = pil_img.convert("RGB")
-    
-    # Resize and crop
-    im = resize_and_crop(im, img_size)
-    
-    # Convert to array and normalize
-    arr = np.asarray(im, dtype=np.float32)  # HWC, 0..255
-    arr = arr / 255.0  # Scale to [0, 1]
-    
-    return arr
-
-def softmax_np(z: np.ndarray) -> np.ndarray:
-    """Apply softmax to logits"""
-    z = z - z.max(axis=1, keepdims=True)
-    e = np.exp(z, dtype=np.float64)
-    return (e / e.sum(axis=1, keepdims=True)).astype(np.float32)
-
-def predict_batch(model, pils: List[Image.Image]) -> np.ndarray:
-    """Predict on a batch of images"""
-    # Preprocess all images
-    x = np.stack([preprocess_image(im, IMG_SIZE) for im in pils], 0).astype(np.float32)
-    
-    # Run prediction
-    probs = model.predict(x, verbose=0)
-    
-    # Apply softmax if outputs are logits
-    if probs.ndim == 2 and not np.allclose(probs.sum(axis=1, keepdims=True), 1.0, atol=1e-3):
-        probs = softmax_np(probs)
-    
-    return probs
-
-# -----------------------
-# STREAMLIT UI
-# -----------------------
+# Streamlit UI
 st.set_page_config(
     page_title="Skin Disease Classifier",
     page_icon="🏥",
@@ -209,185 +142,160 @@ st.set_page_config(
 )
 
 st.title("🏥 Skin Disease Classification System")
-st.markdown("Upload skin lesion images to classify using deep learning models trained on dermatological datasets")
+st.markdown("Upload an image to classify skin conditions using deep learning models")
 
-# Sidebar - Model Selection
-st.sidebar.header("⚙️ Model Selection")
+# Sidebar for model selection
+st.sidebar.header("Model Selection")
 model_choice = st.sidebar.radio(
     "Choose a model:",
-    list(MODELS.keys()),
-    help="Select which model to use for prediction"
+    ["Custom CNN with Attention", "ResNet50 Transfer Learning"]
 )
+
+# Load selected model
+model = None
+if model_choice == "Custom CNN with Attention":
+    with st.spinner("Loading Custom CNN model..."):
+        model_path = download_model(CUSTOM_CNN_URL, "custom_cnn_attention")
+        model = load_model_safe(model_path)
+        if model is not None:
+            st.sidebar.success("✓ Custom CNN Model Loaded")
+        else:
+            st.sidebar.error("❌ Failed to load Custom CNN Model")
+else:
+    with st.spinner("Loading ResNet50 model..."):
+        model_path = download_model(RESNET50_URL, "resnet50_transfer")
+        model = load_model_safe(model_path)
+        if model is not None:
+            st.sidebar.success("✓ ResNet50 Model Loaded")
+        else:
+            st.sidebar.error("❌ Failed to load ResNet50 Model")
 
 # Display model info
-selected_model_info = MODELS[model_choice]
-st.sidebar.info(f"**{model_choice}**\n\n{selected_model_info['description']}")
-
-# Download and load model
-model_url = selected_model_info["url"]
-model_output = selected_model_info["output"]
-
-with st.spinner(f"Loading {model_choice}..."):
-    model_path = download_model(model_url, model_output)
-    
-    if model_path:
-        try:
-            MODEL = load_model(model_path, model_choice)
-            st.sidebar.success(f"✓ {model_choice} loaded successfully")
-            
-            # Test model output shape
-            dummy = np.zeros((1, IMG_SIZE, IMG_SIZE, 3), dtype=np.float32)
-            out = MODEL.predict(dummy, verbose=0)
-            
-            if out.shape[-1] != NUM_CLASSES:
-                st.sidebar.warning(
-                    f"⚠️ Model outputs {out.shape[-1]} classes but expected {NUM_CLASSES}"
-                )
-        except Exception as e:
-            st.error(f"Failed to load model: {e}")
-            st.stop()
-    else:
-        st.error("Could not download model. Please check your internet connection.")
-        st.stop()
-
-# Sidebar - Additional Info
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📊 Model Information")
-st.sidebar.markdown(f"""
-- **Input Size:** {IMG_SIZE}×{IMG_SIZE} pixels
-- **Number of Classes:** {NUM_CLASSES}
-- **Color Mode:** RGB
-- **Preprocessing:** Resize & Center Crop
+st.sidebar.info("""
+**About the Models:**
+- Custom CNN uses attention mechanisms
+- ResNet50 uses transfer learning
+- Both trained on skin disease datasets
 """)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### ℹ️ About")
-st.sidebar.caption(
-    "This application uses convolutional neural networks to classify "
-    "various skin diseases and conditions from images."
-)
 
 # Main content
-st.markdown("---")
-st.markdown("### 📤 Upload Images")
-st.caption("Upload one or more skin lesion images (JPG, PNG, or other common formats)")
+col1, col2 = st.columns([1, 1])
 
-uploaded_files = st.file_uploader(
-    "Choose image files",
-    type=["jpg", "jpeg", "png", "bmp", "tif", "tiff", "webp"],
-    accept_multiple_files=True,
-    help="Upload clear, well-lit images of skin conditions"
-)
-
-predict_button = st.button("🔮 Predict", type="primary", use_container_width=True)
-
-# Prediction logic
-if predict_button:
-    if not uploaded_files:
-        st.error("⚠️ Please upload at least one image before predicting.")
+with col1:
+    st.subheader("📤 Upload Image")
+    uploaded_file = st.file_uploader(
+        "Choose a skin image...",
+        type=["jpg", "jpeg", "png"],
+        help="Upload a clear image of the skin condition"
+    )
+    
+    if uploaded_file is not None:
+        try:
+            # Display uploaded image
+            image = Image.open(uploaded_file)
+            
+            # Convert to RGB if necessary
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            st.image(image, caption="Uploaded Image", use_container_width=True)
+        except Exception as e:
+            st.error(f"Error loading image: {e}")
+            image = None
     else:
-        pil_images, image_names = [], []
-        
-        # Load all uploaded images
-        for uploaded_file in uploaded_files:
-            try:
-                pil_images.append(Image.open(io.BytesIO(uploaded_file.read())))
-                image_names.append(uploaded_file.name)
-            except Exception as e:
-                st.warning(f"❌ Failed to read {uploaded_file.name}: {e}")
-        
-        if pil_images:
-            with st.spinner("🔍 Analyzing images..."):
-                probs = predict_batch(MODEL, pil_images)
-            
-            st.success(f"✓ Successfully analyzed {len(pil_images)} image(s)")
-            st.markdown("---")
-            
-            # Display results for each image
-            for i, pil_img in enumerate(pil_images):
-                st.markdown(f"### 🖼️ Results for: `{image_names[i]}`")
-                
-                col1, col2 = st.columns([1, 1])
-                
-                with col1:
-                    st.image(pil_img, caption=image_names[i], use_container_width=True)
-                
-                with col2:
-                    if probs.shape[-1] != NUM_CLASSES:
-                        st.error(
-                            f"Model outputs {probs.shape[-1]} classes but "
-                            f"expected {NUM_CLASSES}. Class mismatch!"
-                        )
-                        continue
-                    
-                    p = probs[i]
-                    order = np.argsort(-p)[:TOPK]
-                    
-                    # Top prediction
-                    top_class = CLASS_NAMES[int(order[0])]
-                    top_confidence = p[int(order[0])] * 100
-                    
-                    st.markdown(f"#### Predicted Condition:")
-                    st.markdown(f"### **{top_class}**")
-                    st.metric("Confidence", f"{top_confidence:.2f}%")
-                    st.progress(float(p[int(order[0])]))
-                    
-                    st.markdown("---")
-                    st.markdown("#### Top Predictions:")
-                    
-                    for rank, k in enumerate(order, 1):
-                        class_name = CLASS_NAMES[int(k)]
-                        confidence = p[int(k)] * 100
-                        
-                        with st.container():
-                            col_a, col_b = st.columns([3, 1])
-                            with col_a:
-                                st.write(f"**{rank}. {class_name}**")
-                            with col_b:
-                                st.write(f"{confidence:.2f}%")
-                            st.progress(float(p[int(k)]))
-                
-                st.markdown("---")
-                st.warning(
-                    "⚠️ **Medical Disclaimer:** This is an AI-powered tool for educational purposes only. "
-                    "It should NOT replace professional medical diagnosis. Please consult a qualified "
-                    "dermatologist for accurate diagnosis and treatment."
-                )
-                st.markdown("---")
+        image = None
 
-# Footer information
+with col2:
+    st.subheader("🔍 Prediction Results")
+    
+    if model is None:
+        st.error("⚠️ Model failed to load due to compatibility issues.")
+        
+        with st.expander("📋 How to Fix This Issue"):
+            st.markdown("""
+            ### Option 1: Re-save Models (Recommended)
+            
+            Run this in your Jupyter notebook where you trained the models:
+            
+            ```python
+            import tensorflow as tf
+            
+            # For Custom CNN
+            model = tf.keras.models.load_model('best_custom_cnn_attention_model.h5')
+            tf.keras.models.save_model(
+                model, 
+                'best_custom_cnn_attention_model.h5',
+                save_format='h5',
+                include_optimizer=False
+            )
+            
+            # For ResNet50
+            model = tf.keras.models.load_model('best_resnet50_transfer_learning_model.h5')
+            tf.keras.models.save_model(
+                model,
+                'best_resnet50_transfer_learning_model.h5', 
+                save_format='h5',
+                include_optimizer=False
+            )
+            ```
+            
+            Then re-upload to GitHub releases.
+            
+            ### Option 2: Try Different TensorFlow Version
+            
+            The models might be compatible with a different TensorFlow version.
+            Current version: {}
+            """.format(tf.__version__))
+            
+    elif image is None:
+        st.info("👆 Please upload an image to get started")
+    else:
+        with st.spinner('Analyzing image...'):
+            # Make prediction
+            predicted_idx, confidence, all_predictions = predict(model, image)
+            
+            if predicted_idx is not None:
+                predicted_class = CLASS_NAMES[predicted_idx]
+                
+                # Display main prediction
+                st.markdown(f"### Predicted Condition: **{predicted_class}**")
+                st.metric("Confidence", f"{confidence*100:.2f}%")
+                
+                # Display confidence bar
+                st.progress(float(confidence))
+                
+                # Show all class probabilities
+                st.markdown("#### All Class Probabilities:")
+                for class_name, prob in zip(CLASS_NAMES, all_predictions):
+                    col_a, col_b = st.columns([3, 1])
+                    with col_a:
+                        st.write(f"{class_name}")
+                    with col_b:
+                        st.write(f"{prob*100:.2f}%")
+                    st.progress(float(prob))
+                
+                # Warning message
+                st.warning("⚠️ **Disclaimer:** This is an AI prediction and should not replace professional medical diagnosis. Please consult a dermatologist for accurate diagnosis.")
+            else:
+                st.error("Failed to make prediction. Please try another image.")
+
+# Additional information
 st.markdown("---")
-st.markdown("### 📖 How to Use")
 st.markdown("""
-1. **Select a Model** from the sidebar (Custom CNN or ResNet50)
-2. **Upload Images** of skin lesions or conditions
-3. **Click Predict** to analyze the images
-4. **View Results** including top predictions and confidence scores
-5. **Compare Models** by switching between them and re-predicting
+### How to use:
+1. Select a model from the sidebar
+2. Upload a clear image of the skin condition
+3. View the prediction results and confidence scores
+4. Compare results between different models
 
-**Tips for Best Results:**
-- Use clear, well-lit images
-- Ensure the skin condition is clearly visible
-- Avoid images with excessive shadows or blur
-- Center the lesion in the frame
+**Note:** Ensure images are clear and well-lit for best results.
 """)
 
-st.markdown("---")
-st.markdown("### 🏷️ Classifiable Conditions")
-with st.expander("View all conditions"):
-    cols = st.columns(3)
-    for idx, class_name in enumerate(CLASS_NAMES):
-        with cols[idx % 3]:
-            st.markdown(f"• {class_name}")
-
-# Debug information
-with st.expander("🔧 Technical Information"):
-    st.markdown(f"""
-    - **TensorFlow Version:** {tf.__version__}
-    - **Model Loaded:** {model_choice}
-    - **Model Path:** `{model_output}`
-    - **Input Shape:** {MODEL.input_shape}
-    - **Output Shape:** {MODEL.output_shape}
-    - **Image Size:** {IMG_SIZE}×{IMG_SIZE}
-    - **Number of Classes:** {NUM_CLASSES}
-    """)
+# Debug information (hidden by default)
+with st.expander("🔧 Debug Information"):
+    st.write(f"TensorFlow Version: {tf.__version__}")
+    st.write(f"Model loaded: {model is not None}")
+    if model is not None:
+        st.write(f"Model input shape: {model.input_shape}")
+        st.write(f"Model output shape: {model.output_shape}")
