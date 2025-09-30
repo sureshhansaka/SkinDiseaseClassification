@@ -8,8 +8,8 @@ from io import BytesIO
 import os
 
 # Model URLs
-CUSTOM_CNN_URL = "https://drive.google.com/file/d/1irrpB4NAH41Xk1jd9F9bxcvFAMkZOVz5/view?usp=sharing"
-RESNET50_URL = "https://drive.google.com/file/d/1iGKInycbqXCVQ1FTrOBYHjVHAcBDNob0/view?usp=sharing"
+CUSTOM_CNN_URL = "https://drive.google.com/uc?export=download&id=1irrpB4NAH41Xk1jd9F9bxcvFAMkZOVz5"
+RESNET50_URL = "https://drive.google.com/uc?export=download&id=1iGKInycbqXCVQ1FTrOBYHjVHAcBDNob0"
 
 # Class names from your training dataset
 CLASS_NAMES = [
