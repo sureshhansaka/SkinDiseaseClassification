@@ -6,10 +6,11 @@ from PIL import Image
 import requests
 from io import BytesIO
 import os
+import gdown
 
-# Model URLs
-CUSTOM_CNN_URL = "https://drive.google.com/file/d/1lw3jey8sgW2ALcEFeJiFHt2V6-mxJy-B/view?usp=sharing"
-RESNET50_URL = "https://drive.google.com/file/d/1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw/view?usp=sharing"
+# Model URLs - Direct download links from Google Drive
+CUSTOM_CNN_URL = "https://drive.google.com/uc?export=download&id=1lw3jey8sgW2ALcEFeJiFHt2V6-mxJy-B"
+RESNET50_URL = "https://drive.google.com/uc?export=download&id=1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw"
 
 # Class names from your training dataset
 CLASS_NAMES = [
@@ -25,17 +26,15 @@ CLASS_NAMES = [
 ]
 
 @st.cache_resource
-def download_model(url, model_name):
-    """Download model from GitHub releases"""
+def download_model_from_gdrive(file_id, model_name):
+    """Download model from Google Drive using gdown"""
     model_path = f"{model_name}.h5"
     
     if not os.path.exists(model_path):
-        with st.spinner(f'Downloading {model_name}...'):
+        with st.spinner(f'Downloading {model_name}... This may take a few minutes.'):
             try:
-                response = requests.get(url, timeout=60)
-                response.raise_for_status()
-                with open(model_path, 'wb') as f:
-                    f.write(response.content)
+                url = f"https://drive.google.com/uc?id={file_id}"
+                gdown.download(url, model_path, quiet=False)
                 st.success(f"✓ Downloaded {model_name}")
             except Exception as e:
                 st.error(f"Failed to download model: {e}")
@@ -46,11 +45,11 @@ def download_model(url, model_name):
 @st.cache_resource
 def load_model_safe(model_path):
     """Load the trained model with error handling"""
-    if model_path is None:
+    if model_path is None or not os.path.exists(model_path):
         return None
     
     try:
-        # First attempt: Load without compiling
+        # Load without compiling first
         model = tf.keras.models.load_model(model_path, compile=False)
         model.compile(
             optimizer='adam',
@@ -59,40 +58,24 @@ def load_model_safe(model_path):
         )
         return model
     except Exception as e1:
-        st.warning(f"First loading attempt failed: {str(e1)[:100]}")
+        st.warning(f"Standard loading failed, trying alternative method...")
         
-        # Second attempt: Use custom object scope with unsafe deserialization
         try:
-            import h5py
-            with h5py.File(model_path, 'r') as f:
-                model = tf.keras.models.load_model(
-                    model_path, 
-                    compile=False,
-                    safe_mode=False  # Disable safe mode for compatibility
-                )
-                model.compile(
-                    optimizer='adam',
-                    loss='categorical_crossentropy',
-                    metrics=['accuracy']
-                )
-                return model
+            # Try with safe_mode=False for older models
+            model = tf.keras.models.load_model(
+                model_path, 
+                compile=False,
+                safe_mode=False
+            )
+            model.compile(
+                optimizer='adam',
+                loss='categorical_crossentropy',
+                metrics=['accuracy']
+            )
+            return model
         except Exception as e2:
-            st.warning(f"Second loading attempt failed: {str(e2)[:100]}")
-            
-            # Third attempt: Load with TF2 compatibility
-            try:
-                from tensorflow.python.keras.saving import hdf5_format
-                model = hdf5_format.load_model_from_hdf5(model_path, compile=False)
-                model.compile(
-                    optimizer='adam',
-                    loss='categorical_crossentropy',
-                    metrics=['accuracy']
-                )
-                return model
-            except Exception as e3:
-                st.error(f"All loading attempts failed. Last error: {str(e3)[:150]}")
-                st.info("💡 The model files may need to be re-saved. Please check the instructions below.")
-                return None
+            st.error(f"Failed to load model: {str(e2)[:200]}")
+            return None
 
 def preprocess_image(image, target_size=(224, 224)):
     """Preprocess image for model prediction"""
@@ -151,11 +134,15 @@ model_choice = st.sidebar.radio(
     ["Custom CNN with Attention", "ResNet50 Transfer Learning"]
 )
 
+# Extract file IDs
+CUSTOM_CNN_ID = "1lw3jey8sgW2ALcEFeJiFHt2V6-mxJy-B"
+RESNET50_ID = "1bpWH_mFMzT7_WpXUk_83svO9vaOKigpw"
+
 # Load selected model
 model = None
 if model_choice == "Custom CNN with Attention":
     with st.spinner("Loading Custom CNN model..."):
-        model_path = download_model(CUSTOM_CNN_URL, "custom_cnn_attention")
+        model_path = download_model_from_gdrive(CUSTOM_CNN_ID, "custom_cnn_attention")
         model = load_model_safe(model_path)
         if model is not None:
             st.sidebar.success("✓ Custom CNN Model Loaded")
@@ -163,7 +150,7 @@ if model_choice == "Custom CNN with Attention":
             st.sidebar.error("❌ Failed to load Custom CNN Model")
 else:
     with st.spinner("Loading ResNet50 model..."):
-        model_path = download_model(RESNET50_URL, "resnet50_transfer")
+        model_path = download_model_from_gdrive(RESNET50_ID, "resnet50_transfer")
         model = load_model_safe(model_path)
         if model is not None:
             st.sidebar.success("✓ ResNet50 Model Loaded")
@@ -210,44 +197,7 @@ with col2:
     st.subheader("🔍 Prediction Results")
     
     if model is None:
-        st.error("⚠️ Model failed to load due to compatibility issues.")
-        
-        with st.expander("📋 How to Fix This Issue"):
-            st.markdown("""
-            ### Option 1: Re-save Models (Recommended)
-            
-            Run this in your Jupyter notebook where you trained the models:
-            
-            ```python
-            import tensorflow as tf
-            
-            # For Custom CNN
-            model = tf.keras.models.load_model('best_custom_cnn_attention_model.h5')
-            tf.keras.models.save_model(
-                model, 
-                'best_custom_cnn_attention_model.h5',
-                save_format='h5',
-                include_optimizer=False
-            )
-            
-            # For ResNet50
-            model = tf.keras.models.load_model('best_resnet50_transfer_learning_model.h5')
-            tf.keras.models.save_model(
-                model,
-                'best_resnet50_transfer_learning_model.h5', 
-                save_format='h5',
-                include_optimizer=False
-            )
-            ```
-            
-            Then re-upload to GitHub releases.
-            
-            ### Option 2: Try Different TensorFlow Version
-            
-            The models might be compatible with a different TensorFlow version.
-            Current version: {}
-            """.format(tf.__version__))
-            
+        st.warning("⚠️ Please wait for the model to load or check if there are any errors above.")
     elif image is None:
         st.info("👆 Please upload an image to get started")
     else:
@@ -292,7 +242,7 @@ st.markdown("""
 **Note:** Ensure images are clear and well-lit for best results.
 """)
 
-# Debug information (hidden by default)
+# Debug information
 with st.expander("🔧 Debug Information"):
     st.write(f"TensorFlow Version: {tf.__version__}")
     st.write(f"Model loaded: {model is not None}")
